@@ -1,0 +1,107 @@
+name: Build Custom Lite App
+
+on:
+  # This makes the workflow manually runnable from the 'Actions' tab in GitHub.
+  # It also defines the input fields that you'll see in the UI.
+  workflow_dispatch:
+    inputs:
+      app_name:
+        description: 'The display name for your Android app.'
+        required: true
+        default: 'My Web App'
+      website_url:
+        description: 'The full URL of the website your app will open.'
+        required: true
+        default: 'https://www.example.com/'
+      package_name:
+        description: 'The unique Android package name.'
+        required: true
+        default: 'com.webapp.mywebapp'
+      icon_url:
+        description: 'URL for a custom app icon. Must be a direct link to an image file (PNG recommended).'
+        required: false
+        default: ''
+jobs:
+  build_apk:
+    runs-on: ubuntu-latest 
+    permissions:
+      contents: write 
+
+    steps:
+      - name: Checkout repository code
+        # This action checks out your repository onto the runner.
+        uses: actions/checkout@v4
+
+      - name: Set up Java Development Kit (JDK)
+        # Android builds require Java. This action sets up the specified Java version.
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin' # Recommended open-source Java distribution
+          java-version: '17' # Android Studio typically uses Java 17
+
+      - name: Install ImageMagick for icon processing
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+
+      - name: Modify project configuration in build.gradle.kts
+        # This script uses 'sed' to replace the placeholder values in the Gradle build file
+        # with the inputs provided in the workflow_dispatch trigger.
+        run: |
+          GRADLE_FILE="liteappstarter/build.gradle.kts"
+          
+          echo "Updating applicationId to: ${{ github.event.inputs.package_name }}"
+          sed -i 's|applicationId = "org.example.liteapp"|applicationId = "${{ github.event.inputs.package_name }}"|g' "$GRADLE_FILE"
+          
+          echo "Updating start_url to: ${{ github.event.inputs.website_url }}"
+          sed -i 's|resValue("string", "start_url", "https://example.org/")|resValue("string", "start_url", "${{ github.event.inputs.website_url }}")|g' "$GRADLE_FILE"
+          
+          echo "Updating app_name to: ${{ github.event.inputs.app_name }}"
+          sed -i 's|resValue("string", "app_name", "Example")|resValue("string", "app_name", "${{ github.event.inputs.app_name }}")|g' "$GRADLE_FILE"
+
+      - name: Download and process custom icon (if provided)
+        # This step only runs if an icon_url input is provided.
+        # It downloads the image and resizes it for all Android mipmap densities.
+        if: github.event.inputs.icon_url != ''
+        run: |
+          ICON_URL="${{ github.event.inputs.icon_url }}"
+          # The icon resource path relative to the module root
+          ICON_RES_PATH="liteappstarter/src/main/res" 
+          
+          echo "Attempting to download icon from: $ICON_URL"
+          curl -sS -o original_icon.png "$ICON_URL"
+          
+          if [ ! -f "original_icon.png" ]; then
+            echo "::error::Failed to download icon from $ICON_URL. Please ensure the URL is direct and valid."
+            exit 1
+          fi
+          
+          declare -A icon_sizes
+          icon_sizes[mdpi]=48
+          icon_sizes[hdpi]=72
+          icon_sizes[xhdpi]=96
+          icon_sizes[xxhdpi]=144
+          icon_sizes[xxxhdpi]=192
+          
+          for density in "${!icon_sizes[@]}"; do
+              size=${icon_sizes[$density]}
+              DEST_DIR="$ICON_RES_PATH/mipmap-$density"
+              mkdir -p "$DEST_DIR"
+              echo "Resizing icon for $density (${size}x${size}px) and saving to $DEST_DIR/ic_launcher.png"
+              convert original_icon.png -resize "${size}x${size}" "$DEST_DIR/ic_launcher.png"
+          done
+          echo "Icon processing complete."
+
+      - name: Grant execute permission to Gradle wrapper
+        run: chmod +x ./gradlew
+
+      - name: Build Android Debug APK
+        run: ./gradlew liteappstarter:assembleDebug
+
+      - name: Upload generated APK as a workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.app_name }}-${{ github.event.inputs.package_name }}.apk
+          # Path for the generated debug APK.
+          path: liteappstarter/build/outputs/apk/debug/liteappstarter-debug.apk
+          retention-days: 7
